@@ -1,0 +1,22 @@
+{
+  "name": "circle-memory",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node circle-memory.mjs bot"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bencoy09/circle-memory.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Bencoy09/circle-memory/issues"
+  },
+  "homepage": "https://github.com/Bencoy09/circle-memory#readme"
+}
