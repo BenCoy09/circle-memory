@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Circle Memory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#070c2b;--fg:#ebe8e1;--mut:#7f86a8;--line:rgba(235,232,225,.14);--acc:#ff9fc8;
+--sans:'Space Grotesk',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,monospace;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px);scroll-behavior:smooth}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--fg);font:400 17px/1.55 var(--sans);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1160px;margin:0 auto;padding:0 24px}
+.mono{font:400 12px/1.5 var(--mono);letter-spacing:.02em;color:var(--mut)}
+.mono b{color:var(--fg);font-weight:500}
+
+/* preloader */
+#pre{position:fixed;inset:0;z-index:50;background:var(--bg);display:grid;place-items:center;transition:opacity .6s,visibility .6s;cursor:pointer}
+#pre.done{opacity:0;visibility:hidden}
+#pre svg{width:132px;height:132px;display:block;margin:0 auto 22px;overflow:visible}
+.d{fill:none;stroke:var(--fg);stroke-width:1.6;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1.2s cubic-bezier(.65,0,.25,1) forwards}
+.d:nth-child(2){animation-delay:.3s}.d:nth-child(3){animation-delay:.6s}
+.f{fill:var(--acc);opacity:0;animation:fadein .4s 1.7s forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes fadein{to{opacity:1}}
+#pre p{text-align:center}
+#pre .w{font:700 24px var(--sans);letter-spacing:-.02em;margin-bottom:6px;opacity:0;animation:fadein .5s 1.4s forwards}
+#pre .mono::after{content:"";display:inline-block;width:7px;height:13px;background:var(--acc);margin-left:4px;vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* nav */
+nav{display:flex;align-items:center;justify-content:space-between;height:64px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font:700 17px var(--sans);letter-spacing:-.02em}
+.brand svg{width:22px;height:22px}
+nav .r{display:flex;gap:28px;font:400 13px var(--mono)}
+nav .r a{color:var(--mut)}nav .r a:hover{color:var(--fg)}
+
+/* hero */
+.hero{position:relative;padding:84px 0 72px;border-bottom:1px solid var(--line);
+background:linear-gradient(var(--line),var(--line)) 33.33% 0/1px 100% no-repeat,linear-gradient(var(--line),var(--line)) 66.66% 0/1px 100% no-repeat}
+.eyebrow{margin-bottom:26px}
+h1{font:500 clamp(46px,8.4vw,112px)/.94 var(--sans);letter-spacing:-.045em;max-width:9.5em}
+h1 span{color:var(--mut)}
+.lead{max-width:470px;margin-top:34px;color:#c9c6bf}
+.cta{display:flex;gap:14px;flex-wrap:wrap;margin-top:34px}
+.btn{font:500 14px var(--mono);padding:14px 20px;border:1px solid var(--fg);border-radius:2px;transition:background .15s,color .15s}
+.btn.p{background:var(--acc);border-color:var(--acc);color:#14091a}
+.btn:hover{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+
+/* 3D wireframe mark */
+.stage{position:absolute;right:24px;top:56px;width:230px;perspective:800px;text-align:center}
+.tilt{width:190px;height:190px;margin:0 auto 14px;transform-style:preserve-3d;transform:rotateX(var(--rx,-16deg)) rotateY(var(--ry,0deg));transition:transform .3s ease-out}
+.gyro{position:relative;width:100%;height:100%;transform-style:preserve-3d;animation:spin 22s linear infinite}
+.ring{position:absolute;inset:0;border-radius:50%;border:1px solid rgba(235,232,225,.7);transform-style:preserve-3d}
+.ring:nth-child(2){transform:rotateY(60deg)}.ring:nth-child(3){transform:rotateY(120deg)}
+.ring::after{content:"";position:absolute;left:50%;top:-4px;width:8px;height:8px;margin-left:-4px;border-radius:50%;background:var(--fg)}
+.ring:nth-child(1)::after{background:var(--acc)}
+.core{position:absolute;left:50%;top:50%;width:12px;height:12px;margin:-6px;border-radius:50%;background:var(--acc)}
+@keyframes spin{to{transform:rotateY(360deg) rotateZ(360deg)}}
+
+/* sections */
+.sec{display:grid;grid-template-columns:1fr 2fr;gap:40px;padding:72px 0;border-bottom:1px solid var(--line)}
+h2{font:500 clamp(28px,3.6vw,44px)/1.05 var(--sans);letter-spacing:-.035em;max-width:11em}
+.sec .l p{margin-top:16px;color:var(--mut);max-width:300px;font-size:15px}
+
+table{width:100%;border-collapse:collapse;font:400 13px/1.4 var(--mono)}
+th{text-align:left;font-weight:400;color:var(--mut);padding:0 12px 12px 0;border-bottom:1px solid var(--line)}
+td{padding:13px 12px 13px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td:first-child,td:nth-child(3){color:var(--mut);white-space:nowrap}
+td .t{color:var(--acc)}
+tr.new td{animation:row .5s both}
+@keyframes row{from{opacity:0;transform:translateY(-6px)}}
+
+.cmp{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line)}
+.cmp>div{padding:26px}
+.cmp>div+div{border-left:1px solid var(--line)}
+.cmp h3{font:400 12px var(--mono);color:var(--mut);margin-bottom:20px;display:flex;justify-content:space-between}
+.q{font:400 13px var(--mono);color:var(--mut);margin-bottom:16px}
+.cmp .a{font:500 20px/1.3 var(--sans);letter-spacing:-.02em;min-height:130px}
+.trace{margin-top:22px;padding-top:14px;border-top:1px dashed var(--line)}
+.on h3 span:last-child{color:var(--acc)}
+
+.steps div{display:grid;grid-template-columns:64px 160px 1fr;gap:12px;padding:22px 0;border-bottom:1px solid var(--line)}
+.steps div:first-child{padding-top:0}
+.steps b{font:500 20px var(--sans);letter-spacing:-.02em}
+.steps p{color:#c9c6bf;font-size:15px}
+
+.final{padding:96px 0 80px;border-bottom:1px solid var(--line)}
+.final h2{font-size:clamp(36px,6vw,76px);max-width:10em}
+footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:24px 0 40px}
+
+@media(max-width:860px){
+.stage{position:static;margin:0 0 30px;width:150px;text-align:left}.tilt{width:130px;height:130px;margin:0 0 10px}
+.hero{padding-top:40px;background:none}.sec{grid-template-columns:1fr;gap:24px}
+.cmp{grid-template-columns:1fr}.cmp>div+div{border-left:0;border-top:1px solid var(--line)}
+.steps div{grid-template-columns:40px 1fr}.steps p{grid-column:2}
+td:nth-child(3){display:none}nav .r a:not(:last-child){display:none}}
+@media(prefers-reduced-motion:reduce){.gyro,.d,.f,#pre .w,#pre .mono::after,tr.new td{animation:none!important}.d{stroke-dashoffset:0}.f,#pre .w{opacity:1}}
+</style>
+</head>
+<body>
+
+<div id="pre" aria-label="Loading">
+  <div>
+    <svg viewBox="0 0 120 120" aria-hidden="true">
+      <circle class="d" pathLength="1" cx="60" cy="42" r="30"/>
+      <circle class="d" pathLength="1" cx="42" cy="73" r="30"/>
+      <circle class="d" pathLength="1" cx="78" cy="73" r="30"/>
+      <circle class="f" cx="60" cy="62" r="6"/>
+    </svg>
+    <p class="w">Circle Memory</p>
+    <p class="mono">Opening your Circle</p>
+  </div>
+</div>
+
+<div class="wrap">
+  <nav>
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 120 120" aria-hidden="true"><g fill="none" stroke="#ebe8e1" stroke-width="6"><circle cx="60" cy="42" r="30"/><circle cx="42" cy="73" r="30"/><circle cx="78" cy="73" r="30"/></g><circle cx="60" cy="62" r="8" fill="#ff9fc8"/></svg>
+      Circle Memory
+    </a>
+    <div class="r"><a href="#log">Log</a><a href="#diff">Memory on/off</a><a href="#join">Start a Circle →</a></div>
+  </nav>
+
+  <header class="hero" id="top">
+    <div class="stage" id="stage" aria-hidden="true">
+      <div class="tilt" id="tilt"><div class="gyro"><div class="ring"></div><div class="ring"></div><div class="ring"></div><div class="core"></div></div></div>
+      <span class="mono">fig. 1: one circle, three people</span>
+    </div>
+    <p class="mono eyebrow">Shared memory for households, friend groups and small teams</p>
+    <h1>Groups forget. <span>Circle Memory doesn’t.</span></h1>
+    <p class="lead">Every expense, promise and payment is written to a memory the whole group shares. An agent reads that history before it answers, so its advice comes from what your group actually did.</p>
+    <div class="cta"><a class="btn p" href="#join">Start a Circle</a><a class="btn" href="#diff">See what changes</a></div>
+  </header>
+
+  <section class="sec" id="log">
+    <div class="l"><h2>An append-only log of what happened.</h2><p>Each entry records who, when and what came next. Sample data shown.</p></div>
+    <div>
+      <table><thead><tr><th>time</th><th>type</th><th>by</th><th>record</th></tr></thead><tbody id="tl"></tbody></table>
+      <p class="mono" style="margin-top:14px">circle: flat-4b · entries: <b id="cnt">0</b></p>
+    </div>
+  </section>
+
+  <section class="sec" id="diff">
+    <div class="l"><h2>Same question, different answer.</h2><p>The right column shows the records the agent read before replying.</p></div>
+    <div class="cmp">
+      <div>
+        <h3><span>Without memory</span><span>reads: 0</span></h3>
+        <p class="q">&gt; Can you handle rent reminders this month?</p>
+        <p class="a">Sure. I’ll send everyone a reminder on the 1st.</p>
+        <p class="mono trace">No context. Same message to everyone.</p>
+      </div>
+      <div class="on">
+        <h3><span>With memory</span><span>reads: 5</span></h3>
+        <p class="q">&gt; Can you handle rent reminders this month?</p>
+        <p class="a">Dan has paid late four of the last five months, so I’ll remind him on the 28th and everyone else on the 1st. Tobi’s promise to cover utilities is still open.</p>
+        <p class="mono trace">payment × 4 (late) · promise × 1 (open)</p>
+      </div>
+    </div>
+    <p class="mono" style="grid-column:2;margin-top:-20px">Illustrative example.</p>
+  </section>
+
+  <section class="sec">
+    <div class="l"><h2>No accounts. Join and go.</h2><p>An invite link or a Telegram command and a display name.</p></div>
+    <div class="steps">
+      <div><span class="mono">01</span><b>Join</b><p>Open an invite link or send /join to the bot. Your Circle gets its own memory space.</p></div>
+      <div><span class="mono">02</span><b>Record</b><p>Log expenses, promises, payments and decisions as they happen, from chat.</p></div>
+      <div><span class="mono">03</span><b>Ask</b><p>The agent reads the Circle’s history first, so advice improves as the log grows.</p></div>
+    </div>
+  </section>
+
+  <section class="final" id="join">
+    <h2>Give your group a memory.</h2>
+    <div class="cta"><a class="btn p" href="#">Start a Circle</a><a class="btn" href="#">Open Telegram bot</a></div>
+  </section>
+
+  <footer class="mono"><span>© 2026 Circle Memory</span><span>Built on Walrus Memory</span></footer>
+</div>
+
+<script>
+(function(){
+  var el=document.getElementById('pre');
+  function close(){el.classList.add('done')}
+  setTimeout(close,2900);el.addEventListener('click',close);
+
+  var data=[
+    ['expense','maya','Groceries £84, split 4 ways'],
+    ['promise','dan','Rent by the 1st'],
+    ['payment','dan','Rent paid on the 4th (+3 days)'],
+    ['decision','circle','Shared fund tops up on Fridays'],
+    ['expense','tobi','Internet bill £32'],
+    ['payment','dan','Rent paid on the 5th (+4 days)'],
+    ['promise','tobi','Will cover utilities next month'],
+    ['decision','agent','Remind dan on the 28th']
+  ],tl=document.getElementById('tl'),cnt=document.getElementById('cnt'),i=0,h=9,m=12;
+  function add(){
+    var d=data[i%data.length],r=document.createElement('tr');r.className='new';
+    r.innerHTML='<td>'+('0'+h).slice(-2)+':'+('0'+m).slice(-2)+'</td><td><span class="t">'+d[0]+'</span></td><td>'+d[1]+'</td><td>'+d[2]+'</td>';
+    tl.insertBefore(r,tl.firstChild);
+    while(tl.children.length>6)tl.removeChild(tl.lastChild);
+    m+=7+i%5;if(m>59){m-=60;h++}
+    i++;cnt.textContent=i;
+  }
+  for(var k=0;k<5;k++)add();setInterval(add,2600);
+
+  var st=document.getElementById('stage'),t=document.getElementById('tilt');
+  document.addEventListener('pointermove',function(e){
+    var r=st.getBoundingClientRect(),x=(e.clientX-(r.left+r.width/2))/innerWidth,y=(e.clientY-(r.top+r.height/2))/innerHeight;
+    t.style.setProperty('--ry',(x*50)+'deg');t.style.setProperty('--rx',(-16-y*40)+'deg');
+  });
+})();
+</script>
+</body>
+</html>
