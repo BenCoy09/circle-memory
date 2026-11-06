@@ -84,6 +84,16 @@ node circle-memory.mjs serve                # serve the landing page on :3000
 
 The seeded Circle is sample data about invented people, not real users. Every seed write is a real Walrus Memory write.
 
+## Free hosting (Render)
+
+`node circle-memory.mjs host` runs the bot in webhook mode with a small web server (`/healthz`, `/proof.json`, the landing page). On Render create a **Web Service** from this repo:
+
+- Build command: `npm install && git clone --depth 1 https://github.com/MystenLabs/sui-apis sui-apis`
+- Start command: `npm start` (set with `npm pkg set scripts.start="node circle-memory.mjs host"`)
+- Environment: everything from `.env`, plus `SUI_PROTO_DIR=./sui-apis/proto` and optionally `PRIVATE_CIRCLE=flat-4b` so private chats open the demo Circle
+
+Render sets `RENDER_EXTERNAL_URL` itself, and the bot registers its webhook on start. Do not run `bot` (polling) on your computer at the same time: it removes the webhook.
+
 ## Limits
 
 - Everyone in a Telegram chat shares that Circle’s memory.

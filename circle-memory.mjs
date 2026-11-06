@@ -15,6 +15,7 @@
 
 import { appendFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 
 // Load .env before any setting below is read.
 try { await import("dotenv/config"); } catch { /* dotenv optional if env is already set */ }
@@ -231,12 +232,14 @@ Ask:
 /ask Who should I remind about rent?
 /compare Can you handle rent reminders?   (memory off vs on)`;
 
-async function runBot() {
+async function runBot({ webhook = false } = {}) {
   const { Bot, InlineKeyboard } = await import("grammy");
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN in .env");
   const bot = new Bot(token);
-  const circleOf = (ctx) => process.env.DEMO_CIRCLE || `tg${Math.abs(ctx.chat.id)}`; // each chat is its own Circle
+  // Each group chat is its own Circle. PRIVATE_CIRCLE (optional) points private chats at a shared demo Circle.
+  const circleOf = (ctx) =>
+    process.env.DEMO_CIRCLE || (ctx.chat.type === "private" && process.env.PRIVATE_CIRCLE) || `tg${Math.abs(ctx.chat.id)}`;
   const nameOf = (ctx) => ctx.from?.first_name ?? "someone";
   const DIGEST_RE = /\b[1-9A-HJ-NP-Za-km-z]{43,44}\b/;
   const BRIEF_Q = "Give a short reliability brief for each person in this Circle: who pays on time, who pays late and how often, and any promises still open.";
@@ -247,8 +250,13 @@ async function runBot() {
     new InlineKeyboard().text("Log something", "menu:log").text("Ask the Circle", "menu:ask").row()
       .text("Circle brief", "menu:brief").text("How it works", "menu:how");
 
-  const welcome = (name) =>
+  const welcomeBase = (name) =>
     `Hi ${name}. I’m Circle Memory.\n\nI keep one shared memory for this chat: expenses, promises, payments and decisions. Tell me what happened in plain words and I’ll remember it. Ask me anything and I’ll answer from what your group actually did, not what it said it would do.\n\nTry: “Maya paid £84 for groceries, split 4 ways”`;
+  const welcome = (name) =>
+    welcomeBase(name) +
+    (process.env.PRIVATE_CIRCLE
+      ? "\n\nThis private chat is the demo Circle, “Flat 4B”, with sample flatmates and some history already in it. Add me to a group to start a Circle of your own."
+      : "");
 
   // Read a plain-language message and work out what the person wants.
   async function understand(text, name) {
@@ -426,7 +434,44 @@ Schema: {"intent":"log"|"ask"|"other","type":"expense"|"promise"|"payment"|"deci
     }
   }
 
-  await bot.start({ onStart: async (me) => { console.log(`Circle Memory bot running as @${me.username}`); await configureProfile(); } });
+  if (!webhook) {
+    await bot.start({ onStart: async (me) => { console.log(`Circle Memory bot running as @${me.username}`); await configureProfile(); } });
+    return;
+  }
+
+  // Webhook mode for free hosting: the service can sleep and Telegram wakes it with each message.
+  const base = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
+  if (!base) throw new Error("Set PUBLIC_URL to this service’s https address (Render sets RENDER_EXTERNAL_URL itself)");
+  const secret = createHash("sha256").update(token).digest("hex");
+  const { readFile } = await import("node:fs/promises");
+  await bot.init();
+  const server = createServer(async (req, res) => {
+    try {
+      if (req.method === "POST" && req.url === "/telegram") {
+        if (req.headers["x-telegram-bot-api-secret-token"] !== secret) return void res.writeHead(401).end();
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        res.writeHead(200).end("ok"); // answer Telegram at once; the work continues in the background
+        bot.handleUpdate(JSON.parse(body)).catch((e) => console.error("update error:", e));
+        return;
+      }
+      if (req.url === "/healthz") return void res.writeHead(200).end("ok");
+      if (req.url === "/proof.json") {
+        try { return void res.writeHead(200, { "content-type": "application/json" }).end(await readFile(new URL("./proof.json", import.meta.url))); }
+        catch { return void res.writeHead(404).end(); }
+      }
+      if (req.url === "/" || req.url === "/index.html") return void res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(LANDING);
+      res.writeHead(404).end("Not found");
+    } catch (e) {
+      console.error(e);
+      res.writeHead(500).end();
+    }
+  });
+  server.listen(Number(process.env.PORT) || 3000, async () => {
+    await bot.api.setWebhook(`${base}/telegram`, { secret_token: secret, allowed_updates: ["message", "callback_query", "my_chat_member"] });
+    console.log(`Webhook set: ${base}/telegram`);
+    await configureProfile();
+  });
 }
 
 /* ------------------------------ landing page ------------------------------- */
@@ -747,9 +792,11 @@ function runServe() {
 /* ----------------------------------- cli ----------------------------------- */
 
 const USAGE = `Usage:
-  node circle-memory.mjs bot
+  node circle-memory.mjs bot                      Telegram bot on this computer
+  node circle-memory.mjs host                     Telegram bot for free hosting (webhook)
   node circle-memory.mjs seed [circle]
   node circle-memory.mjs compare [circle] [question...]
+  node circle-memory.mjs doctor                   check every connection at once
   node circle-memory.mjs proof [circle]           write proof.json for the website
   node circle-memory.mjs chain                    check the Tatum Sui connection
   node circle-memory.mjs verify <digest> [due]   read a Sui payment through Tatum
@@ -761,6 +808,7 @@ async function main() {
 
   if (cmd === "serve") return runServe();
   if (cmd === "bot") return runBot();
+  if (cmd === "host") return runBot({ webhook: true });
 
   if (cmd === "seed") {
     const circle = args[0] || "flat-4b";
@@ -781,6 +829,28 @@ async function main() {
     console.log(`\n--- MEMORY ON (${on.reads.length} records read) ---\n${on.answer}\n`);
     on.reads.forEach((r, i) => console.log(`[${i + 1}] ${r.text}`));
     return closeAll();
+  }
+
+  if (cmd === "doctor") {
+    const ok = (m) => console.log(`  ok    ${m}`);
+    const bad = (m, e) => console.log(`  FAIL  ${m}: ${e?.message || e}`);
+    const need = ["MEMWAL_ACCOUNT_ID", "MEMWAL_SERVER_URL", "MEMWAL_PRIVATE_KEY", "TELEGRAM_BOT_TOKEN", "TATUM_API_KEY"];
+    const missing = need.filter((k) => !process.env[k]);
+    console.log("Circle Memory check\n");
+    missing.length ? bad("settings", `missing ${missing.join(", ")}`) : ok("settings present");
+    try { await recall(args[0] || "flat-4b", "rent", 1); ok("Walrus Memory: can read the demo Circle"); } catch (e) { bad("Walrus Memory", e); }
+    try { const t = await complete("Reply with the single word OK.", "ping"); ok(`AI model replied: ${t.slice(0, 20)}`); } catch (e) { bad("AI model", e); }
+    try {
+      const c = await suiGrpc();
+      const r = await suiCall(c, "GetCheckpoint", { read_mask: { paths: ["sequence_number"] } });
+      ok(`Tatum Sui gRPC: latest checkpoint ${r.checkpoint?.sequence_number ?? r.sequence_number}`);
+    } catch (e) { bad("Tatum Sui gRPC", e); }
+    try {
+      const j = await (await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getMe`)).json();
+      j.ok ? ok(`Telegram: bot @${j.result.username} is reachable`) : bad("Telegram", j.description);
+    } catch (e) { bad("Telegram", e); }
+    closeAll();
+    return process.exit(0);
   }
 
   if (cmd === "proof") {
