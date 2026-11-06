@@ -175,10 +175,17 @@ async function complete(system, user) {
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${process.env.LLM_API_KEY || "ollama"}` },
-    body: JSON.stringify({ model, max_tokens: 500, messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
+    body: JSON.stringify({
+      model,
+      max_tokens: 1500, // reasoning models spend part of this thinking
+      ...(model.includes("gpt-oss") ? { reasoning_effort: "low" } : {}),
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    }),
   });
   if (!res.ok) throw new Error(`LLM request failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
-  return (await res.json()).choices[0].message.content.trim();
+  const out = (await res.json()).choices?.[0]?.message?.content;
+  if (!out) throw new Error("The AI model returned an empty answer. Try a different LLM_MODEL.");
+  return out.trim();
 }
 
 async function advise(circleId, question, { useMemory = true, limit = 8 } = {}) {
