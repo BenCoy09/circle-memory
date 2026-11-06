@@ -15,12 +15,16 @@ Telegram already knows who each person is, so Circle Memory stores nothing beyon
 
 ## What it does
 
+Talk to it in plain words: "Maya paid £84 for groceries, split 4 ways" or "Who should I remind about rent?". In a group, mention the bot or reply to it. Before anything is saved, the bot shows it back and waits for a tap on **Save to memory**. The commands below are shortcuts.
+
 | Command | What it does |
 | --- | --- |
 | `/expense <text>` | Log a shared expense |
 | `/promise <text>` | Log a promise someone made |
 | `/payment <text>` | Log a payment and whether it was on time |
 | `/decision <text>` | Log a group decision |
+| `/paid <tx digest> [due YYYY-MM-DD]` | Read a Sui payment through Tatum RPC, check who paid, how much and whether it was late, then save it as a verified memory |
+| `/brief` | Who pays on time, who pays late, and which promises are open |
 | `/ask <question>` | Ask for advice, answered from the Circle’s memory |
 | `/compare <question>` | Show the answer with memory off and with memory on |
 
@@ -35,11 +39,18 @@ Each save returns a Walrus blob ID, and every save is appended to `receipts.json
 
 Everything lives in one file, `circle-memory.mjs`.
 
+## Tatum on Sui
+
+Self-reported memories can be wrong. `/paid` reads the transaction from Sui through Tatum’s Sui gRPC gateway (`LedgerService/GetTransaction`), takes the sender, recipient, amount and timestamp from the chain, compares the timestamp with the due date, and saves a memory that starts with "Verified on Sui via Tatum". The agent is told to prefer these records over self-reported ones, so "who pays late" is based on chain data, not claims.
+
+Sui has retired JSON-RPC, so the app uses Tatum’s gRPC gateway with the official `sui-apis` protos. All Sui reads go through `suiGrpc` / `suiCall`, and the Tatum API key is sent as `x-api-key` metadata.
+
 ## Setup
 
 ```bash
 npm init -y && npm pkg set type=module
-npm i @mysten-incubation/memwal grammy dotenv
+npm i @mysten-incubation/memwal grammy dotenv @grpc/grpc-js @grpc/proto-loader
+git clone https://github.com/MystenLabs/sui-apis ~/sui-apis
 ```
 
 Create a `.env` file:
@@ -49,6 +60,9 @@ MEMWAL_ACCOUNT_ID=       # MemWal account ID from the Walrus Memory dashboard
 MEMWAL_SERVER_URL=       # https://relayer.memory.walrus.xyz (mainnet) or https://relayer.dev.memwal.ai (testnet)
 MEMWAL_PRIVATE_KEY=      # delegate key for that account; keep it secret
 TELEGRAM_BOT_TOKEN=      # from @BotFather
+TATUM_API_KEY=           # free key from the Tatum dashboard
+TATUM_SUI_GRPC=          # optional; defaults to sui-mainnet-grpc.gateway.tatum.io:443
+SUI_PROTO_DIR=           # optional; defaults to ~/sui-apis/proto
 LLM_BASE_URL=            # e.g. https://api.groq.com/openai/v1
 LLM_API_KEY=
 LLM_MODEL=               # e.g. llama-3.3-70b-versatile
@@ -62,6 +76,9 @@ The account ID, key and relayer must all be from the same network (mainnet or te
 node circle-memory.mjs seed                 # write 18 demo memories to the flat-4b Circle
 node circle-memory.mjs compare flat-4b "Can you handle rent reminders this month?"
 DEMO_CIRCLE=flat-4b node circle-memory.mjs bot   # bot reads the seeded Circle
+node circle-memory.mjs proof flat-4b        # write proof.json (blob IDs) for the website
+node circle-memory.mjs chain                # check the Tatum Sui connection
+node circle-memory.mjs verify <digest> [due YYYY-MM-DD]
 node circle-memory.mjs serve                # serve the landing page on :3000
 ```
 

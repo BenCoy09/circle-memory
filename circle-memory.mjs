@@ -6,14 +6,18 @@
 //   node circle-memory.mjs compare [circle] [q...]  memory off vs on, in the terminal
 //   node circle-memory.mjs serve                    landing page on http://localhost:3000
 //
-// Install: npm i @mysten-incubation/memwal grammy dotenv   (+ @anthropic-ai/sdk only if you use Anthropic)
+// Install: npm i @mysten-incubation/memwal grammy dotenv @grpc/grpc-js @grpc/proto-loader   (+ @anthropic-ai/sdk only if you use Anthropic)
 // Env (.env): MEMWAL_ACCOUNT_ID MEMWAL_SERVER_URL MEMWAL_PRIVATE_KEY
 //             TELEGRAM_BOT_TOKEN
+//             TATUM_API_KEY [TATUM_SUI_GRPC] [SUI_PROTO_DIR]   (Sui gRPC via Tatum; needs ~/sui-apis)
 //             Free LLM: LLM_BASE_URL LLM_MODEL [LLM_API_KEY]   (defaults to local Ollama + gemma3)
 //             Or paid: ANTHROPIC_API_KEY [ANTHROPIC_MODEL]
 
 import { appendFile } from "node:fs/promises";
 import { createServer } from "node:http";
+
+// Load .env before any setting below is read.
+try { await import("dotenv/config"); } catch { /* dotenv optional if env is already set */ }
 
 const TYPES = ["expense", "promise", "payment", "decision"];
 const RECEIPTS = new URL("./receipts.jsonl", import.meta.url);
@@ -64,6 +68,82 @@ async function recall(circleId, query, limit = 8) {
 
 const closeAll = () => { for (const c of clients.values()) c.destroy(); clients.clear(); };
 
+/* ------------------------------ Tatum Sui gRPC ----------------------------- */
+
+// Sui retired JSON-RPC, so every on-chain read goes through Tatum's Sui gRPC gateway
+// (x-api-key sent as gRPC metadata). It needs the official protos:
+//   git clone https://github.com/MystenLabs/sui-apis ~/sui-apis
+const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "unknown");
+let suiClient;
+
+async function suiGrpc() {
+  if (suiClient) return suiClient;
+  const key = process.env.TATUM_API_KEY;
+  if (!key) throw new Error("Missing TATUM_API_KEY in .env");
+  const grpcMod = await import("@grpc/grpc-js");
+  const loaderMod = await import("@grpc/proto-loader");
+  const grpc = grpcMod.default ?? grpcMod;
+  const loader = loaderMod.default ?? loaderMod;
+  const dir = process.env.SUI_PROTO_DIR || `${process.env.HOME || "~"}/sui-apis/proto`;
+  let def;
+  try {
+    def = loader.loadSync("sui/rpc/v2/ledger_service.proto", {
+      keepCase: true, longs: String, enums: String, oneofs: true, includeDirs: [dir],
+    });
+  } catch (e) {
+    throw new Error(`Couldn’t load the Sui protos from ${dir}. Run: git clone https://github.com/MystenLabs/sui-apis ~/sui-apis (${e.message})`);
+  }
+  const pkg = grpc.loadPackageDefinition(def);
+  const host = process.env.TATUM_SUI_GRPC || "sui-mainnet-grpc.gateway.tatum.io:443";
+  const ledger = new pkg.sui.rpc.v2.LedgerService(host, grpc.credentials.createSsl());
+  const meta = new grpc.Metadata();
+  meta.set("x-api-key", key);
+  suiClient = { ledger, meta, host };
+  return suiClient;
+}
+
+const suiCall = (c, method, req) =>
+  new Promise((resolve, reject) =>
+    c.ledger[method](req, c.meta, { deadline: Date.now() + 20_000 }, (err, res) =>
+      err ? reject(new Error(`Tatum gRPC ${err.code ?? ""}: ${err.details || err.message}`)) : resolve(res)
+    )
+  );
+
+// Turn a Sui transaction into facts: who paid whom, how much, and when.
+function parseTransaction(resp, digest, due) {
+  const tx = resp.transaction ?? resp;
+  if (tx.effects?.status?.success === false) throw new Error("That transaction did not succeed on Sui");
+  const sender = tx.transaction?.sender;
+  const secs = Number(tx.timestamp?.seconds);
+  if (!secs) throw new Error("Sui returned no timestamp for that transaction");
+  const at = new Date(secs * 1000);
+  const gains = (tx.balance_changes || [])
+    .filter((c) => /::sui::SUI$/.test(c.coin_type || "") && BigInt(c.amount) > 0n)
+    .sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
+  const top = gains[0];
+  const amountSui = top ? Number(BigInt(top.amount)) / 1e9 : null;
+
+  let timing = "";
+  if (due) {
+    const dueEnd = Date.parse(`${due}T23:59:59Z`);
+    if (Number.isNaN(dueEnd)) throw new Error("Due date must look like 2026-11-01");
+    const lateDays = Math.ceil((at.getTime() - dueEnd) / 86_400_000);
+    timing = lateDays > 0 ? `, ${lateDays} day${lateDays === 1 ? "" : "s"} after its due date of ${due}` : `, on time for its due date of ${due}`;
+  }
+  const what = amountSui === null ? "a transaction" : `${amountSui} SUI`;
+  const text = `Verified on Sui via Tatum: ${short(sender)} sent ${what}${top ? ` to ${short(top.address)}` : ""} on ${at.toISOString().slice(0, 16).replace("T", " ")} UTC${timing} (tx ${digest})`;
+  return { digest, sender, to: top?.address, amountSui, at, text };
+}
+
+async function verifyPayment(digest, due) {
+  const c = await suiGrpc();
+  const resp = await suiCall(c, "GetTransaction", {
+    digest,
+    read_mask: { paths: ["digest", "transaction.sender", "effects.status", "timestamp", "balance_changes"] },
+  });
+  return parseTransaction(resp, digest, due);
+}
+
 /* -------------------------------- agent layer ------------------------------ */
 
 const WITH_MEMORY = `You are the agent for a small group (a Circle: a household, friend group or team).
@@ -73,6 +153,7 @@ Rules:
 - Cite the records you rely on like [2], [5].
 - Count patterns carefully (e.g. late 4 of 5 times) and only state what the records support.
 - If the records do not contain evidence for something, say so plainly.
+- Records that start with "Verified on Sui via Tatum" were read from the blockchain, so they are more reliable than self-reported records. Prefer them, and say when a claim rests on one.
 - Be short and concrete. Say what you would do and for whom.`;
 
 const NO_MEMORY = `You are an assistant for a small group. You have no access to the group's history.
@@ -99,8 +180,8 @@ async function complete(system, user) {
   return (await res.json()).choices[0].message.content.trim();
 }
 
-async function advise(circleId, question, { useMemory = true } = {}) {
-  const reads = useMemory ? await recall(circleId, question, 8) : [];
+async function advise(circleId, question, { useMemory = true, limit = 8 } = {}) {
+  const reads = useMemory ? await recall(circleId, question, limit) : [];
   const context = reads.length ? reads.map((r, i) => `[${i + 1}] ${r.text}`).join("\n") : "(no records found)";
   const answer = await complete(
     useMemory ? WITH_MEMORY : NO_MEMORY,
@@ -143,19 +224,71 @@ Record something:
 /payment Paid rent today, 3 days late
 /decision Shared fund tops up on Fridays
 
+Verify on Sui (read via Tatum):
+/paid <tx digest> [due YYYY-MM-DD]
+
 Ask:
 /ask Who should I remind about rent?
 /compare Can you handle rent reminders?   (memory off vs on)`;
 
 async function runBot() {
-  const { Bot } = await import("grammy");
+  const { Bot, InlineKeyboard } = await import("grammy");
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN in .env");
   const bot = new Bot(token);
   const circleOf = (ctx) => process.env.DEMO_CIRCLE || `tg${Math.abs(ctx.chat.id)}`; // each chat is its own Circle
   const nameOf = (ctx) => ctx.from?.first_name ?? "someone";
+  const DIGEST_RE = /\b[1-9A-HJ-NP-Za-km-z]{43,44}\b/;
+  const BRIEF_Q = "Give a short reliability brief for each person in this Circle: who pays on time, who pays late and how often, and any promises still open.";
+  const pending = new Map();
+  let pendingSeq = 0;
 
-  bot.command(["start", "help", "join"], (ctx) => ctx.reply(`You’re in. This chat is now a Circle.\n\n${HELP}`));
+  const menu = () =>
+    new InlineKeyboard().text("Log something", "menu:log").text("Ask the Circle", "menu:ask").row()
+      .text("Circle brief", "menu:brief").text("How it works", "menu:how");
+
+  const welcome = (name) =>
+    `Hi ${name}. I’m Circle Memory.\n\nI keep one shared memory for this chat: expenses, promises, payments and decisions. Tell me what happened in plain words and I’ll remember it. Ask me anything and I’ll answer from what your group actually did, not what it said it would do.\n\nTry: “Maya paid £84 for groceries, split 4 ways”`;
+
+  // Read a plain-language message and work out what the person wants.
+  async function understand(text, name) {
+    const today = new Date().toISOString().slice(0, 10);
+    const out = await complete(
+      `You read one chat message sent to a group-memory assistant. Reply with JSON only, no prose.
+Schema: {"intent":"log"|"ask"|"other","type":"expense"|"promise"|"payment"|"decision"|null,"fact":string|null}
+- "log": the message reports something that happened, was promised or was decided. "fact" is one clear sentence in the third person with names, amounts and dates (today is ${today}). Never invent details.
+- "ask": the message asks a question or asks for advice.
+- "other": greetings or anything else.`,
+      `${name} wrote: ${text}`
+    );
+    try { return JSON.parse(out.match(/\{[\s\S]*\}/)[0]); } catch { return { intent: "other" }; }
+  }
+
+  async function answer(ctx, question, opts) {
+    const { answer: a, reads } = await advise(circleOf(ctx), question, opts);
+    await ctx.reply(`${a}\n\nRead ${reads.length} memor${reads.length === 1 ? "y" : "ies"}.`);
+  }
+
+  async function verifyAndSave(ctx, digest, due) {
+    const v = await verifyPayment(digest, due);
+    const r = await remember(circleOf(ctx), { type: "payment", by: nameOf(ctx), text: v.text });
+    await ctx.reply(`Verified on Sui and saved to Walrus.\n\n${v.text}\n\nBlob: ${r.blobId}`);
+  }
+
+  bot.command(["start", "help", "join"], async (ctx) => {
+    const kb = menu();
+    if (ctx.chat.type === "private") kb.row().url("Add to a group", `https://t.me/${ctx.me.username}?startgroup=join`);
+    await ctx.reply(welcome(nameOf(ctx)), { reply_markup: kb });
+  });
+
+  // Greet a group the moment the bot is added to it.
+  bot.on("my_chat_member", async (ctx) => {
+    const up = ctx.myChatMember;
+    const joined = ["member", "administrator"].includes(up.new_chat_member.status) && !["member", "administrator"].includes(up.old_chat_member.status);
+    if (joined && ["group", "supergroup"].includes(ctx.chat.type)) {
+      await ctx.reply(`This chat is now a Circle. Everyone here shares one memory. Mention me with what happened, like “@${ctx.me.username} Dan paid rent, 3 days late”, and I’ll check with you before saving it.`, { reply_markup: menu() });
+    }
+  });
 
   for (const type of TYPES) {
     bot.command(type, async (ctx) => {
@@ -170,15 +303,21 @@ async function runBot() {
     });
   }
 
+  bot.command("paid", async (ctx) => {
+    const [digest, due] = (ctx.match || "").trim().split(/\s+/);
+    if (!digest) return ctx.reply("Usage: /paid <tx digest> [due date YYYY-MM-DD]");
+    if (!DIGEST_RE.test(digest)) return ctx.reply("That doesn’t look like a Sui transaction digest.");
+    try { await verifyAndSave(ctx, digest, due); } catch (e) { await ctx.reply(`Couldn’t verify that: ${e.message}`); }
+  });
+
   bot.command("ask", async (ctx) => {
     const q = ctx.match?.trim();
     if (!q) return ctx.reply("Usage: /ask <question>");
-    try {
-      const { answer, reads } = await advise(circleOf(ctx), q);
-      await ctx.reply(`${answer}\n\nRead ${reads.length} memor${reads.length === 1 ? "y" : "ies"}.`);
-    } catch (e) {
-      await ctx.reply(`Something went wrong: ${e.message}`);
-    }
+    try { await answer(ctx, q); } catch (e) { await ctx.reply(`Something went wrong: ${e.message}`); }
+  });
+
+  bot.command("brief", async (ctx) => {
+    try { await answer(ctx, BRIEF_Q, { limit: 20 }); } catch (e) { await ctx.reply(`Something went wrong: ${e.message}`); }
   });
 
   bot.command("compare", async (ctx) => {
@@ -192,8 +331,102 @@ async function runBot() {
     }
   });
 
+  // Plain language: no commands needed. In groups, mention the bot or reply to it.
+  bot.on("message:text", async (ctx) => {
+    let text = ctx.msg.text.trim();
+    if (text.startsWith("/")) return;
+    const me = ctx.me.username;
+    const priv = ctx.chat.type === "private";
+    const mentioned = text.toLowerCase().includes(`@${me.toLowerCase()}`);
+    const replied = ctx.msg.reply_to_message?.from?.id === ctx.me.id;
+    if (!priv && !mentioned && !replied) return;
+    text = text.replace(new RegExp(`@${me}`, "ig"), "").trim();
+    if (!text) return ctx.reply("I’m here. Tell me what happened, or ask a question.", { reply_markup: menu() });
+
+    await ctx.replyWithChatAction("typing");
+    try {
+      const digest = text.match(DIGEST_RE)?.[0];
+      if (digest) return await verifyAndSave(ctx, digest, text.match(/\d{4}-\d{2}-\d{2}/)?.[0]);
+
+      const u = await understand(text, nameOf(ctx));
+      if (u.intent === "log" && u.fact && TYPES.includes(u.type)) {
+        const id = String(++pendingSeq);
+        pending.set(id, { circle: circleOf(ctx), by: nameOf(ctx), userId: ctx.from.id, type: u.type, text: u.fact });
+        if (pending.size > 200) pending.delete(pending.keys().next().value);
+        return await ctx.reply(`Save this to the Circle’s memory?\n\n${u.type.toUpperCase()} · ${u.fact}`, {
+          reply_markup: new InlineKeyboard().text("Save to memory", `save:${id}`).text("Discard", `drop:${id}`),
+        });
+      }
+      if (u.intent === "ask") return await answer(ctx, text);
+      await ctx.reply("I can remember what happens in this Circle, or answer from what it has already recorded. Tell me what happened, or ask a question.", { reply_markup: menu() });
+    } catch (e) {
+      await ctx.reply(`Something went wrong: ${e.message}`);
+    }
+  });
+
+  bot.callbackQuery(/^save:(\d+)$/, async (ctx) => {
+    const id = ctx.match[1];
+    const p = pending.get(id);
+    if (!p) return ctx.answerCallbackQuery({ text: "That one expired. Send it again." });
+    if (p.userId !== ctx.from.id) return ctx.answerCallbackQuery({ text: `Only ${p.by} can confirm this.` });
+    await ctx.answerCallbackQuery({ text: "Saving to Walrus…" });
+    try {
+      const r = await remember(p.circle, { type: p.type, by: p.by, text: p.text });
+      pending.delete(id);
+      await ctx.editMessageText(`Saved to Walrus.\n\n${p.type.toUpperCase()} · ${p.text}\n\nBlob: ${r.blobId}`);
+    } catch (e) {
+      await ctx.editMessageText(`Couldn’t save that: ${e.message}`);
+    }
+  });
+
+  bot.callbackQuery(/^drop:(\d+)$/, async (ctx) => {
+    pending.delete(ctx.match[1]);
+    await ctx.answerCallbackQuery({ text: "Discarded." });
+    await ctx.editMessageText("Discarded. Nothing was saved.");
+  });
+
+  bot.callbackQuery("menu:log", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply("Just tell me what happened, in your own words.\n\n“Dan paid his share of rent today, 3 days late”\n“Tobi promised to cover next month’s utilities”\n“We agreed the shared fund tops up every Friday”");
+  });
+  bot.callbackQuery("menu:ask", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply("Ask me anything about your group.\n\n“Who should I remind about rent?”\n“Has anyone been covering the bills?”\n“What did we agree about the shared fund?”");
+  });
+  bot.callbackQuery("menu:brief", async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "Reading the Circle’s memory…" });
+    try { await answer(ctx, BRIEF_Q, { limit: 20 }); } catch (e) { await ctx.reply(`Something went wrong: ${e.message}`); }
+  });
+  bot.callbackQuery("menu:how", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply("Every chat is its own Circle with its own memory on Walrus. When you tell me something, I show it back to you first, and it’s only saved when you confirm. When you ask a question, I read the Circle’s history before I answer and say how many records I used.\n\nPaste a Sui transaction digest and I’ll read it from the chain through Tatum, check who paid, how much and when, and save it as a verified payment.");
+  });
+
   bot.catch((err) => console.error("bot error:", err.error ?? err));
-  await bot.start({ onStart: (me) => console.log(`Circle Memory bot running as @${me.username}`) });
+
+  // Set up the bot's profile and command menu automatically, so BotFather isn't needed.
+  async function configureProfile() {
+    try {
+      await bot.api.setMyName("Circle Memory");
+      await bot.api.setMyShortDescription("A shared memory for your group.");
+      await bot.api.setMyDescription("Circle Memory keeps one shared memory for your group: expenses, promises, payments and decisions. Tap Start, tell me what happened in plain words, and ask me anything. I answer from what your group actually did.");
+      await bot.api.setMyCommands([
+        { command: "start", description: "Start Circle Memory in this chat" },
+        { command: "ask", description: "Ask a question about your Circle" },
+        { command: "brief", description: "Who pays on time, who doesn’t" },
+        { command: "compare", description: "Answer with memory off vs on" },
+        { command: "paid", description: "Verify a Sui payment by its digest" },
+        { command: "expense", description: "Log a shared expense" },
+        { command: "promise", description: "Log a promise" },
+        { command: "payment", description: "Log a payment" },
+        { command: "decision", description: "Log a group decision" },
+      ]);
+    } catch (e) {
+      console.warn("Skipped bot profile setup:", e.message);
+    }
+  }
+
+  await bot.start({ onStart: async (me) => { console.log(`Circle Memory bot running as @${me.username}`); await configureProfile(); } });
 }
 
 /* ------------------------------ landing page ------------------------------- */
@@ -204,6 +437,8 @@ const LANDING = String.raw`<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Circle Memory</title>
+<meta name="description" content="Circle Memory is a shared memory for groups. An agent reads what your group actually did before it answers."><meta name="theme-color" content="#070c2b"><meta property="og:title" content="Circle Memory"><meta property="og:description" content="Groups forget. Circle Memory doesn’t."><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' fill='%23070c2b'/%3E%3Cg fill='none' stroke='%23ebe8e1' stroke-width='6'%3E%3Ccircle cx='60' cy='42' r='30'/%3E%3Ccircle cx='42' cy='73' r='30'/%3E%3Ccircle cx='78' cy='73' r='30'/%3E%3C/g%3E%3Ccircle cx='60' cy='62' r='8' fill='%23ff9fc8'/%3E%3C/svg%3E">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -218,20 +453,30 @@ a{color:inherit;text-decoration:none}
 .mono{font:400 12px/1.5 var(--mono);letter-spacing:.02em;color:var(--mut)}
 .mono b{color:var(--fg);font-weight:500}
 
-/* preloader */
-#pre{position:fixed;inset:0;z-index:50;background:var(--bg);display:grid;place-items:center;transition:opacity .6s,visibility .6s;cursor:pointer}
-#pre.done{opacity:0;visibility:hidden}
-#pre svg{width:132px;height:132px;display:block;margin:0 auto 22px;overflow:visible}
+/* welcome */
+body:not(.go){overflow:hidden}
+#pre{position:fixed;inset:0;z-index:50;display:grid;place-items:center;cursor:pointer}
+#pre.gone{visibility:hidden;pointer-events:none}
+#pre .h{position:absolute;left:0;right:0;height:50.3%;background:var(--bg);transition:transform 1.05s cubic-bezier(.77,0,.18,1)}
+#pre .h1{top:0;border-bottom:1px solid var(--line)}#pre .h2{bottom:0}
+#pre.out .h1{transform:translateY(-101%)}#pre.out .h2{transform:translateY(101%)}
+#pre .c,#pre .m{position:relative;transition:opacity .45s}
+#pre.out .c,#pre.out .m{opacity:0}
+#pre .c{text-align:center;padding:0 24px}
+#pre svg{width:128px;height:128px;display:block;margin:0 auto 26px;overflow:visible}
 .d{fill:none;stroke:var(--fg);stroke-width:1.6;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1.2s cubic-bezier(.65,0,.25,1) forwards}
 .d:nth-child(2){animation-delay:.3s}.d:nth-child(3){animation-delay:.6s}
-.f{fill:var(--acc);opacity:0;animation:fadein .4s 1.7s forwards}
+.f{fill:var(--acc);opacity:0;transform-origin:60px 62px;animation:pop .5s 1.7s forwards}
 @keyframes draw{to{stroke-dashoffset:0}}
-@keyframes fadein{to{opacity:1}}
-#pre p{text-align:center}
-#pre .w{font:700 24px var(--sans);letter-spacing:-.02em;margin-bottom:6px;opacity:0;animation:fadein .5s 1.4s forwards}
-#pre .mono::after{content:"";display:inline-block;width:7px;height:13px;background:var(--acc);margin-left:4px;vertical-align:-2px;animation:blink 1s steps(1) infinite}
-@keyframes blink{50%{opacity:0}}
-
+@keyframes pop{from{opacity:0;transform:scale(.2)}to{opacity:1;transform:none}}
+@keyframes fadein{to{opacity:1;transform:none}}
+#pw{font:700 clamp(26px,5vw,38px)/1 var(--sans);letter-spacing:-.035em;min-height:1em}
+#pw span{display:inline-block;opacity:0;transform:translateY(.5em);animation:fadein .5s forwards}
+.tg{margin-top:16px;font:400 15px var(--mono);color:var(--mut)}
+.tg span{display:block;opacity:0;animation:fadein .6s forwards}
+.tg span:nth-child(1){animation-delay:2.3s}.tg span:nth-child(2){animation-delay:2.9s;color:var(--acc)}
+#pre .m{position:absolute;bottom:calc(24px + env(safe-area-inset-bottom,0px))}
+#pre .cnt{left:24px}#pre .sk{right:24px}
 /* nav */
 nav{display:flex;align-items:center;justify-content:space-between;height:64px;border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px;font:700 17px var(--sans);letter-spacing:-.02em}
@@ -300,21 +545,46 @@ footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;paddin
 .steps div{grid-template-columns:40px 1fr}.steps p{grid-column:2}
 td:nth-child(3){display:none}nav .r a:not(:last-child){display:none}}
 @media(prefers-reduced-motion:reduce){.gyro,.d,.f,#pre .w,#pre .mono::after,tr.new td{animation:none!important}.d{stroke-dashoffset:0}.f,#pre .w{opacity:1}}
+
+/* ux layer */
+:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+::selection{background:var(--acc);color:#14091a}
+#bar{position:fixed;top:0;left:0;right:0;height:2px;background:var(--acc);transform:scaleX(0);transform-origin:0 50%;z-index:40}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--bg);z-index:19}
+nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:rgba(7,12,43,.82);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+.brand svg{transition:transform .6s cubic-bezier(.2,.8,.2,1)}.brand:hover svg{transform:rotate(120deg)}
+nav .r a{position:relative}nav .r a::after{content:"";position:absolute;left:0;right:0;bottom:-4px;height:1px;background:var(--acc);transform:scaleX(0);transform-origin:0 50%;transition:transform .3s}
+nav .r a:hover::after{transform:scaleX(1)}
+.btn::after{content:" \2192";display:inline-block;transition:transform .2s}.btn:hover::after{transform:translateX(4px)}
+h1 .ln{display:inline-block;overflow:hidden;vertical-align:top;padding-bottom:.1em;color:var(--fg)}
+h1 .ln.mu{color:var(--mut)}
+h1 .ln i{display:inline-block;font-style:normal;transform:translateY(112%);transition:transform 1.1s cubic-bezier(.2,.8,.2,1)}
+.go h1 .ln i{transform:none}.go h1 .ln.mu i{transition-delay:.14s}
+.eyebrow,.lead,.cta,.stage{opacity:0;transform:translateY(16px);transition:opacity .9s,transform .9s cubic-bezier(.2,.8,.2,1)}
+.go .eyebrow,.go .lead,.go .cta,.go .stage{opacity:1;transform:none}
+.go .eyebrow{transition-delay:.05s}.go .lead{transition-delay:.35s}.go .cta{transition-delay:.5s}.go .stage{transition-delay:.7s}
+.rv{opacity:0;transform:translateY(24px);transition:opacity .9s,transform .9s cubic-bezier(.2,.8,.2,1)}.rv.in{opacity:1;transform:none}
+tbody tr:hover td{background:rgba(235,232,225,.035)}
+.steps div{transition:padding-left .3s}.steps div:hover{padding-left:12px}
+@media(prefers-reduced-motion:reduce){.rv,.eyebrow,.lead,.cta,.stage,h1 .ln i{opacity:1!important;transform:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 
-<div id="pre" aria-label="Loading">
-  <div>
+<div id="bar"></div>
+<div id="pre" role="dialog" aria-label="Welcome to Circle Memory">
+  <div class="h h1"></div><div class="h h2"></div>
+  <div class="c">
     <svg viewBox="0 0 120 120" aria-hidden="true">
       <circle class="d" pathLength="1" cx="60" cy="42" r="30"/>
       <circle class="d" pathLength="1" cx="42" cy="73" r="30"/>
       <circle class="d" pathLength="1" cx="78" cy="73" r="30"/>
       <circle class="f" cx="60" cy="62" r="6"/>
     </svg>
-    <p class="w">Circle Memory</p>
-    <p class="mono">Opening your Circle</p>
+    <p id="pw" aria-label="Circle Memory"></p>
+    <p class="tg"><span>Groups forget.</span><span>Circle Memory doesn’t.</span></p>
   </div>
+  <span class="mono m cnt" id="cn">000</span><span class="mono m sk">Click to enter</span>
 </div>
 
 <div class="wrap">
@@ -323,7 +593,7 @@ td:nth-child(3){display:none}nav .r a:not(:last-child){display:none}}
       <svg viewBox="0 0 120 120" aria-hidden="true"><g fill="none" stroke="#ebe8e1" stroke-width="6"><circle cx="60" cy="42" r="30"/><circle cx="42" cy="73" r="30"/><circle cx="78" cy="73" r="30"/></g><circle cx="60" cy="62" r="8" fill="#ff9fc8"/></svg>
       Circle Memory
     </a>
-    <div class="r"><a href="#log">Log</a><a href="#diff">Memory on/off</a><a href="#join">Start a Circle →</a></div>
+    <div class="r"><a href="#log">Log</a><a href="#diff">Memory on/off</a><a href="https://t.me/CircleMemoryBot" target="_blank" rel="noopener">Start a Circle →</a></div>
   </nav>
 
   <header class="hero" id="top">
@@ -332,9 +602,9 @@ td:nth-child(3){display:none}nav .r a:not(:last-child){display:none}}
       <span class="mono">fig. 1: one circle, three people</span>
     </div>
     <p class="mono eyebrow">Shared memory for households, friend groups and small teams</p>
-    <h1>Groups forget. <span>Circle Memory doesn’t.</span></h1>
-    <p class="lead">Every expense, promise and payment is written to a memory the whole group shares. An agent reads that history before it answers, so its advice comes from what your group actually did.</p>
-    <div class="cta"><a class="btn p" href="#join">Start a Circle</a><a class="btn" href="#diff">See what changes</a></div>
+    <h1><span class="ln"><i>Groups forget.</i></span> <span class="ln mu"><i>Circle Memory doesn’t.</i></span></h1>
+    <p class="lead">Tell it what happened in plain words. Every expense, promise and payment goes into a memory the whole group shares, and an agent reads that history before it answers, so its advice comes from what your group actually did.</p>
+    <div class="cta"><a class="btn p" href="https://t.me/CircleMemoryBot" target="_blank" rel="noopener">Start a Circle</a><a class="btn" href="#diff">See what changes</a></div>
   </header>
 
   <section class="sec" id="log">
@@ -365,27 +635,71 @@ td:nth-child(3){display:none}nav .r a:not(:last-child){display:none}}
   </section>
 
   <section class="sec">
-    <div class="l"><h2>No accounts. Join and go.</h2><p>An invite link or a Telegram command and a display name.</p></div>
+    <div class="l"><h2>No accounts. Join and go.</h2><p>Add the bot to a chat and start talking. Nothing to sign up for.</p></div>
     <div class="steps">
-      <div><span class="mono">01</span><b>Join</b><p>Open an invite link or send /join to the bot. Your Circle gets its own memory space.</p></div>
-      <div><span class="mono">02</span><b>Record</b><p>Log expenses, promises, payments and decisions as they happen, from chat.</p></div>
-      <div><span class="mono">03</span><b>Ask</b><p>The agent reads the Circle’s history first, so advice improves as the log grows.</p></div>
+      <div><span class="mono">01</span><b>Join</b><p>Add @CircleMemoryBot to a Telegram chat. That chat becomes a Circle with its own memory.</p></div>
+      <div><span class="mono">02</span><b>Tell it</b><p>Say what happened in your own words. The bot shows what it understood and saves it only when you tap confirm.</p></div>
+      <div><span class="mono">03</span><b>Verify</b><p>Paste a Sui transaction digest. The bot reads it from the chain through Tatum, so who paid and when is proven, not claimed.</p></div>
+      <div><span class="mono">04</span><b>Ask</b><p>The agent reads the Circle’s history first and cites the records it used.</p></div>
+    </div>
+  </section>
+
+  <section class="sec" id="proof" hidden>
+    <div class="l"><h2>Receipts, not promises.</h2><p>Every memory is a real write to Walrus. Verified payments were read from the Sui chain through Tatum.</p></div>
+    <div>
+      <table><thead><tr><th>type</th><th>record</th><th>walrus blob</th></tr></thead><tbody id="pf"></tbody></table>
+      <p class="mono" style="margin-top:14px" id="pfn"></p>
     </div>
   </section>
 
   <section class="final" id="join">
     <h2>Give your group a memory.</h2>
-    <div class="cta"><a class="btn p" href="#">Start a Circle</a><a class="btn" href="#">Open Telegram bot</a></div>
+    <div class="cta"><a class="btn p" href="https://t.me/CircleMemoryBot" target="_blank" rel="noopener">Start a Circle</a><a class="btn" href="https://t.me/CircleMemoryBot" target="_blank" rel="noopener">Open Telegram bot</a></div>
   </section>
 
-  <footer class="mono"><span>© 2026 Circle Memory</span><span>Built on Walrus Memory</span></footer>
+  <footer class="mono"><span>© 2026 Circle Memory</span><span>Built on Walrus Memory and Tatum</span></footer>
 </div>
 
 <script>
 (function(){
-  var el=document.getElementById('pre');
-  function close(){el.classList.add('done')}
-  setTimeout(close,2900);el.addEventListener('click',close);
+  var el=document.getElementById('pre'),pw=document.getElementById('pw'),cn=document.getElementById('cn'),fin=false,seen=false,rm=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  try{seen=sessionStorage.getItem('cm')==='1'}catch(e){}
+  "Circle Memory".split('').forEach(function(c,i){var s=document.createElement('span');s.textContent=c===' '?'\u00a0':c;s.style.animationDelay=(1.5+i*.045)+'s';pw.appendChild(s)});
+  function close(){
+    if(fin)return;fin=true;el.classList.add('out');document.body.classList.add('go');
+    setTimeout(function(){el.classList.add('gone')},1150);
+    try{sessionStorage.setItem('cm','1')}catch(e){}
+  }
+  if(seen||rm){el.classList.add('gone');document.body.classList.add('go');fin=true}
+  else{
+    var t0=performance.now();
+    (function tick(t){var p=Math.min(1,(t-t0)/4200);cn.textContent=('00'+Math.round(p*100)).slice(-3);if(fin)return;if(p<1)requestAnimationFrame(tick);else close()})(t0);
+    el.addEventListener('click',close);
+    addEventListener('keydown',function(e){if(e.key==='Enter'||e.key==='Escape')close()});
+  }
+
+  fetch('proof.json').then(function(r){return r.ok?r.json():null}).then(function(d){
+    if(!d||!d.items||!d.items.length)return;
+    var tb=document.getElementById('pf');
+    d.items.slice().reverse().forEach(function(it){
+      var m=/^\[(\w+)\]\s*/.exec(it.text),tr=document.createElement('tr');
+      [m?m[1]:'',it.text.replace(/^\[\w+\]\s*/,''),it.blobId?it.blobId.slice(0,10)+'\u2026':''].forEach(function(v,i){
+        var td=document.createElement('td');
+        if(i===0){var sp=document.createElement('span');sp.className='t';sp.textContent=v;td.appendChild(sp)}else td.textContent=v;
+        if(i===2){td.title=it.blobId||'';td.style.whiteSpace='nowrap'}
+        tr.appendChild(td)});
+      tb.appendChild(tr)});
+    document.getElementById('pfn').textContent=d.items.length+' writes from a demo Circle with sample people'+(d.verified?' \u00b7 '+d.verified+' verified on Sui via Tatum':'');
+    document.getElementById('proof').hidden=false;
+  }).catch(function(){});
+  var bar=document.getElementById('bar');
+  addEventListener('scroll',function(){var h=document.documentElement;bar.style.transform='scaleX('+(h.scrollTop/(h.scrollHeight-h.clientHeight||1))+')'},{passive:true});
+  var rvs=document.querySelectorAll('.sec>*,.final>*,.panel');
+  [].forEach.call(rvs,function(n){n.classList.add('rv')});
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12});
+    [].forEach.call(rvs,function(n){io.observe(n)});
+  }else{[].forEach.call(rvs,function(n){n.classList.add('in')})}
 
   var data=[
     ['expense','maya','Groceries £84, split 4 ways'],
@@ -436,6 +750,9 @@ const USAGE = `Usage:
   node circle-memory.mjs bot
   node circle-memory.mjs seed [circle]
   node circle-memory.mjs compare [circle] [question...]
+  node circle-memory.mjs proof [circle]           write proof.json for the website
+  node circle-memory.mjs chain                    check the Tatum Sui connection
+  node circle-memory.mjs verify <digest> [due]   read a Sui payment through Tatum
   node circle-memory.mjs serve`;
 
 async function main() {
@@ -464,6 +781,32 @@ async function main() {
     console.log(`\n--- MEMORY ON (${on.reads.length} records read) ---\n${on.answer}\n`);
     on.reads.forEach((r, i) => console.log(`[${i + 1}] ${r.text}`));
     return closeAll();
+  }
+
+  if (cmd === "proof") {
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const circle = args[0] || "flat-4b";
+    let rows;
+    try { rows = (await readFile(RECEIPTS, "utf8")).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); }
+    catch { return console.log("No receipts.jsonl yet. Run the seed first."); }
+    const items = rows.filter((r) => r.circle === namespaceFor(circle)).slice(-24).map((r) => ({ text: r.text, blobId: r.blobId, at: r.at }));
+    const verified = items.filter((i) => i.text.includes("Verified on Sui via Tatum")).length;
+    await writeFile(new URL("./proof.json", import.meta.url), JSON.stringify({ circle, updated: new Date().toISOString(), verified, items }, null, 2));
+    return console.log(`Wrote proof.json with ${items.length} writes for ${circle} (${verified} verified on Sui). Commit it next to index.html.`);
+  }
+
+  if (cmd === "chain") {
+    const c = await suiGrpc();
+    console.log(`Tatum Sui gRPC gateway: ${c.host}`);
+    const r = await suiCall(c, "GetCheckpoint", { read_mask: { paths: ["sequence_number", "digest"] } });
+    console.log("Latest checkpoint:", r.checkpoint?.sequence_number ?? r.sequence_number);
+    return;
+  }
+
+  if (cmd === "verify") {
+    const [digest, due] = args;
+    if (!digest) return console.log("Usage: node circle-memory.mjs verify <tx digest> [due YYYY-MM-DD]");
+    return console.log((await verifyPayment(digest, due)).text);
   }
 
   console.log(USAGE);

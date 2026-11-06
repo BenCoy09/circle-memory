@@ -1,0 +1,97 @@
+{
+  "circle": "flat-4b",
+  "updated": "2026-11-06T12:32:35.166Z",
+  "verified": 0,
+  "items": [
+    {
+      "text": "[promise] Dan promised to pay his share of rent by the 1st (recorded by dan on 2026-06-25)",
+      "blobId": "OrZSnF2MgNm0QjbPKvsa41azZcp8w0HWIE8DSk6ogrU",
+      "at": "2026-11-05T17:55:12.789Z"
+    },
+    {
+      "text": "[payment] Dan paid July rent on the 4th, 3 days after the due date (recorded by dan on 2026-07-04)",
+      "blobId": "Jockiac2f1TpfFh3jtBz9BRxghoIDRknAcNLCpOrriU",
+      "at": "2026-11-05T17:55:37.307Z"
+    },
+    {
+      "text": "[expense] Maya paid £84 for groceries, split 4 ways (recorded by maya on 2026-07-09)",
+      "blobId": "l4BMO4caQ_LHPRyWUWtIB6_wW6XjLZs4RYrHgnU-t30",
+      "at": "2026-11-05T17:56:00.692Z"
+    },
+    {
+      "text": "[payment] Tobi paid July rent on the 1st, on time (recorded by tobi on 2026-07-01)",
+      "blobId": "AGnWIAFdmOCTWmaQjN40imEyfofeQrmfTtvrwxkPiFA",
+      "at": "2026-11-05T17:56:22.811Z"
+    },
+    {
+      "text": "[payment] Dan paid August rent on the 6th, 5 days late (recorded by dan on 2026-08-06)",
+      "blobId": "EDb5KviUcu1utQT-98l05qtBWYdduFP7vGk0BwNKmyI",
+      "at": "2026-11-05T17:56:43.901Z"
+    },
+    {
+      "text": "[payment] Maya paid August rent on the 1st, on time (recorded by maya on 2026-08-01)",
+      "blobId": "TRHg9c5Q4-VJw6ybKAGLO8Iw6fu32zgo1vifaq7M628",
+      "at": "2026-11-05T17:57:06.428Z"
+    },
+    {
+      "text": "[decision] The Circle agreed the shared fund tops up every Friday (recorded by maya on 2026-08-10)",
+      "blobId": "eL6oLd7n9MJyaZ34hK4TutHSKyVrnI6ZlPKYUyxaH9g",
+      "at": "2026-11-05T17:57:28.547Z"
+    },
+    {
+      "text": "[payment] Dan paid September rent on the 4th, 3 days late (recorded by dan on 2026-09-04)",
+      "blobId": "yKxgpHqiaPNNng2LN64UMkNPp35hoqz7YHhDGXmdLpY",
+      "at": "2026-11-05T17:57:49.431Z"
+    },
+    {
+      "text": "[expense] Tobi covered the internet bill, £32 (recorded by tobi on 2026-09-12)",
+      "blobId": "g864kXjtcdkQCaAT0Xsy7Nynvxaawj-jv6G5KxII4Is",
+      "at": "2026-11-05T17:58:11.965Z"
+    },
+    {
+      "text": "[payment] Tobi paid September rent on the 1st, on time (recorded by tobi on 2026-09-01)",
+      "blobId": "CMkkKaUgF8cfBut222_oI9ak-shZ2UANV-toPbJM7jM",
+      "at": "2026-11-05T17:58:35.002Z"
+    },
+    {
+      "text": "[promise] Tobi promised to cover next month’s utilities (recorded by tobi on 2026-09-20)",
+      "blobId": "Tlx2NFbRSg4knt6lhY7VHbOWSBLS4Dc4M1pnXJ1_4ng",
+      "at": "2026-11-05T17:59:01.285Z"
+    },
+    {
+      "text": "[payment] Dan paid October rent on the 1st, on time (recorded by dan on 2026-10-01)",
+      "blobId": "E3SWoCZRRG3RqGWpBkeY789WAk5YPWPv2YmHgIhWQ9s",
+      "at": "2026-11-05T17:59:23.029Z"
+    },
+    {
+      "text": "[payment] Dan paid his share of the October electricity bill, 1 day late (recorded by dan on 2026-10-02)",
+      "blobId": "n8MBPMGt2QnvRr0opuVgBnIXsJwK8o0BZet1kLHmMS0",
+      "at": "2026-11-05T17:59:48.523Z"
+    },
+    {
+      "text": "[payment] Maya paid October rent on the 1st, on time (recorded by maya on 2026-10-01)",
+      "blobId": "8de47k399IrC_qYFeHpGjQHm-Q699rYDtyv7ccOxo3o",
+      "at": "2026-11-05T18:00:12.800Z"
+    },
+    {
+      "text": "[expense] Maya paid £61 for cleaning supplies, split 4 ways (recorded by maya on 2026-10-15)",
+      "blobId": "GvPFvZXLpp9cRZnsVu7qvF_Y-VzmTpD2O8kDM5hOMMg",
+      "at": "2026-11-05T18:00:35.819Z"
+    },
+    {
+      "text": "[decision] The Circle agreed reminders go out 2 days before a due date for anyone who paid late before (recorded by tobi on 2026-10-18)",
+      "blobId": "2RskW0AS5SU4V_RAv0I9jN5yFexoVqK7l51R8lwXwmE",
+      "at": "2026-11-05T18:00:58.633Z"
+    },
+    {
+      "text": "[promise] Dan promised to pay November rent by the 1st (recorded by dan on 2026-10-25)",
+      "blobId": "iOGhAPo1IJB2thF6cZmYkgZGlAxXK-AjC_RP_3MK7KI",
+      "at": "2026-11-05T18:01:28.817Z"
+    },
+    {
+      "text": "[payment] Dan paid November rent on the 3rd, 2 days late (recorded by dan on 2026-11-03)",
+      "blobId": "qraXiITBdYffsFWPLR7v7zG6gl9xtlzRCVhGuTargXs",
+      "at": "2026-11-05T18:01:46.792Z"
+    }
+  ]
+}
