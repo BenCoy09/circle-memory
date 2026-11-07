@@ -386,25 +386,32 @@ Schema: {"intent":"log"|"ask"|"other","type":"expense"|"promise"|"payment"|"deci
     }
   });
 
+  // Editing a message to identical text makes Telegram answer 400; that is harmless, so ignore it.
+  const safeEdit = async (ctx, text) => {
+    try { await ctx.editMessageText(text); }
+    catch (e) { if (!/not modified/i.test(e.message)) console.error("edit failed:", e.message); }
+  };
+
   bot.callbackQuery(/^save:(\d+)$/, async (ctx) => {
     const id = ctx.match[1];
     const p = pending.get(id);
-    if (!p) return ctx.answerCallbackQuery({ text: "That one expired. Send it again." });
+    if (!p) return ctx.answerCallbackQuery({ text: "Already saved, or it expired." });
     if (p.userId !== ctx.from.id) return ctx.answerCallbackQuery({ text: `Only ${p.by} can confirm this.` });
+    pending.delete(id); // claim it now, so a second tap can never save it twice
     await ctx.answerCallbackQuery({ text: "Saving to Walrus…" });
+    await safeEdit(ctx, `Saving to Walrus…\n\n${p.type.toUpperCase()} · ${p.text}`); // also removes the buttons
     try {
       const r = await remember(p.circle, { type: p.type, by: p.by, text: p.text });
-      pending.delete(id);
-      await ctx.editMessageText(`Saved to Walrus.\n\n${p.type.toUpperCase()} · ${p.text}\n\nBlob: ${r.blobId}`);
+      await safeEdit(ctx, `Saved to Walrus.\n\n${p.type.toUpperCase()} · ${p.text}\n\nBlob: ${r.blobId}`);
     } catch (e) {
-      await ctx.editMessageText(`Couldn’t save that: ${e.message}`);
+      await safeEdit(ctx, `Couldn’t save that: ${e.message}\n\nSend it again to retry.`);
     }
   });
 
   bot.callbackQuery(/^drop:(\d+)$/, async (ctx) => {
     pending.delete(ctx.match[1]);
     await ctx.answerCallbackQuery({ text: "Discarded." });
-    await ctx.editMessageText("Discarded. Nothing was saved.");
+    await safeEdit(ctx, "Discarded. Nothing was saved.");
   });
 
   bot.callbackQuery("menu:log", async (ctx) => {
