@@ -155,6 +155,7 @@ Rules:
 - Count patterns carefully (e.g. late 4 of 5 times) and only state what the records support.
 - If the records do not contain evidence for something, say so plainly.
 - Records that start with "Verified on Sui via Tatum" were read from the blockchain, so they are more reliable than self-reported records. Prefer them, and say when a claim rests on one.
+- Write plain text for a chat app: no markdown, no tables, no asterisks or pipes. One short line per item. Keep it under 120 words unless asked for more.
 - Be short and concrete. Say what you would do and for whom.`;
 
 const NO_MEMORY = `You are an assistant for a small group. You have no access to the group's history.
@@ -250,7 +251,7 @@ async function runBot({ webhook = false } = {}) {
   const nameOf = (ctx) => ctx.from?.first_name ?? "someone";
   const DIGEST_RE = /\b[1-9A-HJ-NP-Za-km-z]{43,44}\b/;
   const BRIEF_Q = "Give a short reliability brief for each person in this Circle: who pays on time, who pays late and how often, and any promises still open.";
-  const OPEN_Q = "List every promise or commitment that is still open: who owes what, by when, and whether it is overdue today. A promise is closed if a later record shows it was done or paid. If nothing is open, say so.";
+  const OPEN_Q = "List every promise or commitment that is still open, one short line each in this form: Name: what they owe, due date (or no date), overdue or not overdue. Skip any promise that a later record shows was done or paid. If nothing is open, say so.";
   const pending = new Map();
   let pendingSeq = 0;
 
@@ -274,7 +275,7 @@ async function runBot({ webhook = false } = {}) {
     const out = await complete(
       `You read one chat message sent to a group-memory assistant. Reply with JSON only, no prose.
 Schema: {"intent":"log"|"ask"|"other","type":"expense"|"promise"|"payment"|"decision"|null,"fact":string|null}
-- "log": the message reports something that happened, was promised or was decided. "fact" is one clear sentence in the third person with names, amounts and dates (today is ${today}, a ${weekday}). If a promise or task has a deadline, state it as "due YYYY-MM-DD", turning words like "Friday" into a real date. Never invent details.
+- "log": the message reports something that happened, was promised or was decided. "fact" is one clear sentence in the third person with names, amounts and dates (today is ${today}, a ${weekday}). If a promise or task has a deadline, end the sentence with "(due YYYY-MM-DD)", turning words like "Friday" into a real date, and do not also write "by Friday" or "by due". Never invent details.
 - "ask": the message asks a question or asks for advice.
 - "other": greetings or anything else.`,
       `${name} wrote: ${text}`
