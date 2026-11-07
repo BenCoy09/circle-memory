@@ -2,6 +2,8 @@
 
 **Groups forget. Circle Memory doesn’t.**
 
+Every group runs on promises made in chat: *I’ll pay by Friday*, *I’ll handle it*, *we agreed*. Then the chat scrolls and nobody remembers who owed what. Circle Memory is the missing layer. Tell it what happened in plain words and it keeps every promise, payment and decision with a name and a date, so anyone can ask "what’s still open?" and get an answer backed by records and, for payments, by the Sui chain.
+
 Circle Memory is a shared memory for groups: households, friend groups and small teams. Members write what actually happens (expenses, promises, payments, decisions) into one memory on [Walrus Memory](https://docs.wal.app/walrus-memory). An agent reads that history before it answers, so its advice comes from what the group did, not what it said it would do.
 
 - Telegram bot: [@CircleMemoryBot](https://t.me/CircleMemoryBot)
@@ -24,6 +26,7 @@ Talk to it in plain words: "Maya paid £84 for groceries, split 4 ways" or "Who 
 | `/payment <text>` | Log a payment and whether it was on time |
 | `/decision <text>` | Log a group decision |
 | `/paid <tx digest> [due YYYY-MM-DD]` | Read a Sui payment through Tatum RPC, check who paid, how much and whether it was late, then save it as a verified memory |
+| `/open` | What promises are still open, who owes what, and what is overdue |
 | `/brief` | Who pays on time, who pays late, and which promises are open |
 | `/ask <question>` | Ask for advice, answered from the Circle’s memory |
 | `/compare <question>` | Show the answer with memory off and with memory on |

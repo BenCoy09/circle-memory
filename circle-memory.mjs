@@ -193,7 +193,7 @@ async function advise(circleId, question, { useMemory = true, limit = 8 } = {}) 
   const context = reads.length ? reads.map((r, i) => `[${i + 1}] ${r.text}`).join("\n") : "(no records found)";
   const answer = await complete(
     useMemory ? WITH_MEMORY : NO_MEMORY,
-    useMemory ? `Circle memory:\n${context}\n\nQuestion: ${question}` : question
+    useMemory ? `Today is ${new Date().toISOString().slice(0, 10)}.\nCircle memory:\n${context}\n\nQuestion: ${question}` : question
   );
   return { answer, reads };
 }
@@ -250,12 +250,14 @@ async function runBot({ webhook = false } = {}) {
   const nameOf = (ctx) => ctx.from?.first_name ?? "someone";
   const DIGEST_RE = /\b[1-9A-HJ-NP-Za-km-z]{43,44}\b/;
   const BRIEF_Q = "Give a short reliability brief for each person in this Circle: who pays on time, who pays late and how often, and any promises still open.";
+  const OPEN_Q = "List every promise or commitment that is still open: who owes what, by when, and whether it is overdue today. A promise is closed if a later record shows it was done or paid. If nothing is open, say so.";
   const pending = new Map();
   let pendingSeq = 0;
 
   const menu = () =>
     new InlineKeyboard().text("Log something", "menu:log").text("Ask the Circle", "menu:ask").row()
-      .text("Circle brief", "menu:brief").text("How it works", "menu:how");
+      .text("What’s open", "menu:open").text("Circle brief", "menu:brief").row()
+      .text("How it works", "menu:how");
 
   const welcomeBase = (name) =>
     `Hi ${name}. I’m Circle Memory.\n\nI keep one shared memory for this chat: expenses, promises, payments and decisions. Tell me what happened in plain words and I’ll remember it. Ask me anything and I’ll answer from what your group actually did, not what it said it would do.\n\nTry: “Maya paid £84 for groceries, split 4 ways”`;
@@ -268,10 +270,11 @@ async function runBot({ webhook = false } = {}) {
   // Read a plain-language message and work out what the person wants.
   async function understand(text, name) {
     const today = new Date().toISOString().slice(0, 10);
+    const weekday = new Date().toLocaleDateString("en-GB", { weekday: "long" });
     const out = await complete(
       `You read one chat message sent to a group-memory assistant. Reply with JSON only, no prose.
 Schema: {"intent":"log"|"ask"|"other","type":"expense"|"promise"|"payment"|"decision"|null,"fact":string|null}
-- "log": the message reports something that happened, was promised or was decided. "fact" is one clear sentence in the third person with names, amounts and dates (today is ${today}). Never invent details.
+- "log": the message reports something that happened, was promised or was decided. "fact" is one clear sentence in the third person with names, amounts and dates (today is ${today}, a ${weekday}). If a promise or task has a deadline, state it as "due YYYY-MM-DD", turning words like "Friday" into a real date. Never invent details.
 - "ask": the message asks a question or asks for advice.
 - "other": greetings or anything else.`,
       `${name} wrote: ${text}`
@@ -333,6 +336,10 @@ Schema: {"intent":"log"|"ask"|"other","type":"expense"|"promise"|"payment"|"deci
 
   bot.command("brief", async (ctx) => {
     try { await answer(ctx, BRIEF_Q, { limit: 20 }); } catch (e) { await ctx.reply(`Something went wrong: ${e.message}`); }
+  });
+
+  bot.command("open", async (ctx) => {
+    try { await answer(ctx, OPEN_Q, { limit: 30 }); } catch (e) { await ctx.reply(`Something went wrong: ${e.message}`); }
   });
 
   bot.command("compare", async (ctx) => {
@@ -408,6 +415,10 @@ Schema: {"intent":"log"|"ask"|"other","type":"expense"|"promise"|"payment"|"deci
     await ctx.answerCallbackQuery();
     await ctx.reply("Ask me anything about your group.\n\n“Who should I remind about rent?”\n“Has anyone been covering the bills?”\n“What did we agree about the shared fund?”");
   });
+  bot.callbackQuery("menu:open", async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "Checking what’s still open…" });
+    try { await answer(ctx, OPEN_Q, { limit: 30 }); } catch (e) { await ctx.reply(`Something went wrong: ${e.message}`); }
+  });
   bot.callbackQuery("menu:brief", async (ctx) => {
     await ctx.answerCallbackQuery({ text: "Reading the Circle’s memory…" });
     try { await answer(ctx, BRIEF_Q, { limit: 20 }); } catch (e) { await ctx.reply(`Something went wrong: ${e.message}`); }
@@ -428,6 +439,7 @@ Schema: {"intent":"log"|"ask"|"other","type":"expense"|"promise"|"payment"|"deci
       await bot.api.setMyCommands([
         { command: "start", description: "Start Circle Memory in this chat" },
         { command: "ask", description: "Ask a question about your Circle" },
+        { command: "open", description: "What promises are still open" },
         { command: "brief", description: "Who pays on time, who doesn’t" },
         { command: "compare", description: "Answer with memory off vs on" },
         { command: "paid", description: "Verify a Sui payment by its digest" },
@@ -653,7 +665,7 @@ tbody tr:hover td{background:rgba(235,232,225,.035)}
       <div class="tilt" id="tilt"><div class="gyro"><div class="ring"></div><div class="ring"></div><div class="ring"></div><div class="core"></div></div></div>
       <span class="mono">fig. 1: one circle, three people</span>
     </div>
-    <p class="mono eyebrow">Shared memory for households, friend groups and small teams</p>
+    <p class="mono eyebrow">For every group that has said “I thought you were handling that”</p>
     <h1><span class="ln"><i>Groups forget.</i></span> <span class="ln mu"><i>Circle Memory doesn’t.</i></span></h1>
     <p class="lead">Tell it what happened in plain words. Every expense, promise and payment goes into a memory the whole group shares, and an agent reads that history before it answers, so its advice comes from what your group actually did.</p>
     <div class="cta"><a class="btn p" href="https://t.me/CircleMemoryBot" target="_blank" rel="noopener">Start a Circle</a><a class="btn" href="#diff">See what changes</a></div>
